@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException 
 from pydantic import BaseModel
+
 import os
+
+from app.database import Base, engine
+from app import models
 
 app=FastAPI(title="CybAware API", version="0.1.0")
 
+Base.metadata.create_all(bind=engine)
 
 class HealthOut(BaseModel):
     ok: bool
@@ -25,3 +30,4 @@ def readiness():
     if os.getenv("READY", "true").lower() != "true":
         raise HTTPException(status_code=503, detail="Not ready")
     return ("status:", "ready")
+
