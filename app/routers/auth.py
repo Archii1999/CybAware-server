@@ -1,24 +1,82 @@
+# app/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from app.schemas.auth import LoginInput, Token
-from app.security import verify_password, create_access_token
-from app.models import User
-from app.deps import get_db, get_current_user
+from jose import JWTError
+from typing import Any, Dict
+
+from app.deps import get_db
+from app import models
+from app.schemas.users import UserCreate, UserOut
+from app.schemas.auth import TokenOut  # zorg dat dit bestaat
+from app.security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_token,      # return type: Dict[str, Any]
+    oauth2_scheme,     # OAuth2PasswordBearer(tokenUrl="/auth/login")
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/login", response_model=Token)
-def login(form: LoginInput, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form.email).first()
-    if not user or not verify_password(form.password, user.password):
+# --- Helpers ---
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> models.User:
+    try:
+        payload: Dict[str, Any] = decode_token(token)
+        sub = payload.get("sub")
+        if sub is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+        try:
+            user_id = int(sub)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    user = db.get(models.User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive account")
+    return user
+
+# --- Endpoints ---
+@router.post("/login", response_model=TokenOut)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),  # username/password uit Authorize
+    db: Session = Depends(get_db),
+):
+    email = form_data.username  # bij ons is "username" de e-mail
+    password = form_data.password
+
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user or not verify_password(password, user.password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive account")
 
-    token = create_access_token(subject=user.id)
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_access_token(subject=str(user.id))
+    return TokenOut(access_token=token)
 
-@router.get("/me")
-def me(current = Depends(get_current_user)):
+@router.get("/me", response_model=UserOut)
+def me(current: models.User = Depends(get_current_user)):
+    return current
 
-    return {"id": current.id, "name": current.name, "email": current.email, "role": getattr(current, "role", "user")}
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def register(payload: UserCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+
+    user = models.User(
+        name=payload.name,
+        email=payload.email,
+        password=hash_password(payload.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user

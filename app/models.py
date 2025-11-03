@@ -1,8 +1,6 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, Boolean, Integer, DateTime, func
-
-class Base(DeclarativeBase):
-    pass
+from app.database import Base  # haal Base hier vandaan
 
 class User(Base):
     __tablename__ = "users"

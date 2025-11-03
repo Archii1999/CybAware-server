@@ -10,8 +10,6 @@ from app.core.config import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")  
 
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
@@ -26,3 +24,11 @@ def create_access_token(subject: str | int, expires_minutes: Optional[int] = Non
 def decode_token(token: str) -> dict:
     
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+get_password_hash = hash_password
+
