@@ -1,11 +1,22 @@
+# Python
 __pycache__/
 *.pyc
-.venv/
-
-#env
-.env
-
-.vscode/
-
-app.db
+*.pyo
+*.pyd
 *.db
+
+# Venv & build
+.env
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

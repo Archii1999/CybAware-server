@@ -10,3 +10,4 @@ class TokenOut(BaseModel):
 
 class TokenPayload(BaseModel):
     sub: str
+

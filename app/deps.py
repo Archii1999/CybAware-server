@@ -1,45 +1,58 @@
-from fastapi import Depends, HTTPException, status
-from jose import JWTError
+# app/deps.py
+from fastapi import Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
-from typing import Callable
+from app.security import decode_token
+from app.db import get_db
+from app import models
 
-from app.database import SessionLocal
-from app.security import oauth2_scheme, decode_token
-from app.models import User
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
-) -> User:
+    authorization: str = Header(...),
+    db: Session = Depends(get_db),
+) -> models.User:
     try:
-        payload = decode_token(token)
-        sub = payload.get("sub") if isinstance(payload, dict) else getattr(payload, "sub", None)
-        if not sub:
-            raise ValueError("No subject in token")
-        user_id = int(sub)
-    except (JWTError, ValueError, TypeError):
+        scheme, token = authorization.split(" ")
+        if scheme.lower() != "bearer":
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
+
+    payload = decode_token(token)
+    if not payload or "sub" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-
-    if not getattr(user, "is_active", True):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    user = db.get(models.User, int(payload["sub"]))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or unknown user")
 
     return user
 
-def require_roles(*allowed: str) -> Callable:
-    def dep(user: User = Depends(get_current_user)) -> User:
-        role = getattr(user, "role", "user")
-        if allowed and role not in allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
-        return user
-    return dep
+
+
+def get_org_id(x_org_id: int | None = Header(None)) -> int:
+    if not x_org_id:
+        raise HTTPException(status_code=400, detail="Missing X-Org-Id header")
+    return x_org_id
+
+
+
+def require_role(*allowed_roles: models.Role):
+    """
+    Gebruik:
+    ctx = Depends(require_role(models.Role.OWNER, models.Role.ADMIN))
+    -> returnt {"user": ..., "org_id": ..., "role": ...}
+    """
+    def _inner(
+        user: models.User = Depends(get_current_user),
+        org_id: int = Depends(get_org_id),
+        db: Session = Depends(get_db),
+    ):
+        membership = db.query(models.Membership).filter_by(user_id=user.id, org_id=org_id).first()
+        if not membership:
+            raise HTTPException(status_code=403, detail="User is not a member of this organization")
+
+        if allowed_roles and membership.role not in {r.value for r in allowed_roles}:
+            raise HTTPException(status_code=403, detail="Insufficient role permissions")
+
+        return {"user": user, "org_id": org_id, "role": membership.role}
+    return _inner
