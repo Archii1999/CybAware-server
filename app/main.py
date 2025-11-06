@@ -7,6 +7,8 @@ import os
 
 from app.database import Base, engine
 from app import models
+from app.tenancy import TenantMiddleware
+from app.db import engine
 
 app=FastAPI(title="CybAware API", version="0.1.0")
 
@@ -35,3 +37,15 @@ def readiness():
         raise HTTPException(status_code=503, detail="Not ready")
     return ("status:", "ready")
 
+def create_app() -> FastAPI:
+    app = FastAPI(title="CybAware API")
+    Base.metadata.create_all(bind=engine)
+
+    app.add_middleware(TenantMiddleware, base_domain="cybaware.nl")
+
+    from app.routers import auth, users
+    app.include_router(auth_router)
+    app.include_router(users_router)
+    return app
+
+app = create_app()

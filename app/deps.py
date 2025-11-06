@@ -56,3 +56,6 @@ def require_role(*allowed_roles: models.Role):
 
         return {"user": user, "org_id": org_id, "role": membership.role}
     return _inner
+
+def org_scope(query, org_id: int, model):
+    return query.filter(getattr(model, "org_id") == org_id)

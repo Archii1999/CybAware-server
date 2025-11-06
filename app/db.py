@@ -5,11 +5,12 @@ from contextlib import contextmanager
 from typing import Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings  
 
+Base = declarative_base()
 
 def _make_engine():
     url = settings.DATABASE_URL
