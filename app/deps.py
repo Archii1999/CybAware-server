@@ -2,8 +2,9 @@
 from fastapi import Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.security import decode_token
-from app.db import get_db
+from app.database import get_db          
 from app import models
+from typing import Union 
 
 
 def get_current_user(
@@ -29,89 +30,75 @@ def get_current_user(
 
 
 
-def get_org_id(x_org_id: int | None = Header(None)) -> int:
-    if not x_org_id:
-        raise HTTPException(status_code=400, detail="Missing X-Org-Id header")
-    return x_org_id
+def get_org_id(slug: str, db: Session = Depends(get_db)) -> int:
+    org = db.query(models.Organization).filter(models.Organization.slug == slug).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisatie niet gevonden")
+    return org.id
 
-
-
-def _to_role(value: str | models.Role) -> models.Role:
-    """Normaliseer naar Role enum, met duidelijke fout bij onbekende waarde."""
-    if isinstance(value, models.Role):
-        return value
+def _to_role(r: Union[models.Role, str]) -> models.Role:
+    if isinstance(r, models.Role):
+        return r
     try:
-        return models.Role(value)
+        return models.Role(r)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown role value: {value!r}",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Onbekende rol: {r!r}")
 
-def require_role(
-    *allowed_roles: models.Role,
-    allow_owner: bool = True,
-):
-   
+def require_role(*allowed_roles: Union[models.Role, str], allow_owner: bool = True):
     def _inner(
         user: models.User = Depends(get_current_user),
         org_id: int = Depends(get_org_id),
         db: Session = Depends(get_db),
     ):
-        membership = (
-            db.query(models.Membership)
-            .filter_by(user_id=user.id, org_id=org_id)
-            .first()
-        )
+        membership = db.query(models.Membership).filter_by(user_id=user.id, org_id=org_id).first()
         if not membership:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User is not a member of this organization",
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this organization")
 
-        
-        try:
-            member_role = models.Role(membership.role)
-        except ValueError:
-            # Onverwachte data in DB; blokkeer toegang i.p.v. stil falen
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid role on membership",
-            )
+        member_role: models.Role = membership.role  # SAEnum(Role) -> Enum al gecast
 
-        # OWNER override
         if allow_owner and member_role is models.Role.OWNER:
             return {"user": user, "org_id": org_id, "role": member_role}
 
-        
         if not allowed_roles:
             return {"user": user, "org_id": org_id, "role": member_role}
 
-        # Rol-check
-        allowed: set[models.Role] = { _to_role(r) for r in allowed_roles }
+        allowed: set[models.Role] = {_to_role(r) for r in allowed_roles}
         if member_role not in allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient role permissions",
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role permissions")
 
         return {"user": user, "org_id": org_id, "role": member_role}
-
     return _inner
 
-
 def require_membership(allow_owner: bool = True):
-    """Alleen lid zijn (optioneel OWNER override). Handig voor read-only endpoints."""
     return require_role(allow_owner=allow_owner)
 
+RANK = {
+    models.Role.EMPLOYEE: 1,
+    models.Role.MANAGER:  2,
+    models.Role.ADMIN:    3,
+    models.Role.OWNER:    4,
+}
+
+def require_min_role(min_role: Union[models.Role, str], allow_owner: bool = True):
+    min_role = _to_role(min_role)
+    def _inner(
+        user: models.User = Depends(get_current_user),
+        org_id: int = Depends(get_org_id),
+        db: Session = Depends(get_db),
+    ):
+        membership = db.query(models.Membership).filter_by(user_id=user.id, org_id=org_id).first()
+        if not membership:
+            raise HTTPException(status_code=403, detail="User is not a member of this organization")
+        role: models.Role = membership.role
+        if allow_owner and role is models.Role.OWNER:
+            return {"user": user, "org_id": org_id, "role": role}
+        if RANK[role] < RANK[min_role]:
+            raise HTTPException(status_code=403, detail="Insufficient role level")
+        return {"user": user, "org_id": org_id, "role": role}
+    return _inner
 
 def org_scope(query, org_id: int, model):
-    """
-    Beperk een SQLAlchemy-query naar de meegegeven organisatie.
-    Verwacht dat 'model' een kolom 'org_id' heeft.
-    """
-    try:
-        col = getattr(model, "org_id")
-    except AttributeError as e:
-        raise RuntimeError(f"Model {model!r} has no 'org_id' column") from e
+    col = getattr(model, "org_id", None)
+    if col is None:
+        raise RuntimeError(f"Model {model!r} has no 'org_id' column")
     return query.filter(col == org_id)
